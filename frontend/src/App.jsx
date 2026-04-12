@@ -4,7 +4,8 @@ import FileUpload from "./components/FileUpload.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import { PRODUCT_LINE, TAGLINE } from "./constants.js";
 
-const API_BASE = import.meta.env.VITE_API_URL || "";
+
+const API_BASE = "https://finsight-backend-6sik.onrender.com";
 
 export default function App() {
   const [data, setData] = useState(null);
