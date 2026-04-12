@@ -1,20 +1,4 @@
-"""
-FINSIGHT — Real-World XLSX Balance Sheet Parser
-================================================
-Drop-in upgrade for app.py that adds a /upload/xlsx endpoint able to parse
-real company balance sheets (tested on Infosys FY2025 standalone BS).
-
-Key design decisions (XLSX V1)
-------------------------------
-* Totals-only: finds Total assets, Total equity, Total non-current liabilities,
-  Total current liabilities via flexible case-insensitive label matching.
-* Amounts are read only from column C onward; column B is never used for numbers.
-* Labels are taken from column A and, when useful, non-numeric text in column B.
-* Liabilities = non-current liabilities + current liabilities, with a last-resort
-  fallback of assets minus equity when NCL/CL are missing.
-* The existing /upload (CSV) endpoint is preserved unchanged.
-"""
-
+print("CORRECT FILE RUNNING")
 from __future__ import annotations
 
 import io
