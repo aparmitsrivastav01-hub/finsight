@@ -1,4 +1,3 @@
-print("CORRECT FILE RUNNING")
 from __future__ import annotations
 
 import io
