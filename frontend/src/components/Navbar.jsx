@@ -1,4 +1,5 @@
 import { TAGLINE } from "../constants.js";
+import { NavLink } from "react-router-dom";
 
 export default function Navbar() {
   return (
@@ -21,9 +22,30 @@ export default function Navbar() {
             </div>
           </div>
         </div>
-        <span className="hidden sm:inline text-xs text-slate-500 font-medium tabular-nums shrink-0">
-          Health · Ratios · Structure
-        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          <NavLink
+            to="/"
+            className={({ isActive }) =>
+              [
+                "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
+                isActive ? "bg-white/10 text-white" : "text-slate-400 hover:text-white hover:bg-white/5",
+              ].join(" ")
+            }
+          >
+            Dashboard
+          </NavLink>
+          <NavLink
+            to="/analyze"
+            className={({ isActive }) =>
+              [
+                "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
+                isActive ? "bg-sky-500/20 text-sky-300 border border-sky-500/25" : "text-slate-400 hover:text-white hover:bg-white/5",
+              ].join(" ")
+            }
+          >
+            Analyze
+          </NavLink>
+        </div>
       </div>
     </nav>
   );

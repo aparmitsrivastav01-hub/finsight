@@ -305,6 +305,8 @@ def _compute_health(ta: float, tl: float, te: float, is_balanced: bool) -> dict[
 CATEGORY_ALIASES = ("category", "type", "section", "class")
 ITEM_ALIASES     = ("item", "name", "description", "account")
 AMOUNT_ALIASES   = ("amount", "value", "balance", "sum")
+METRIC_ALIASES   = ("metric", "field", "label", "item", "account", "name")
+GROWTH_ALIASES   = ("growth", "change", "pct_change", "percent_change", "delta")
 
 
 def _normalize_header(name: str) -> str:
@@ -322,6 +324,286 @@ def _find_column(df: pd.DataFrame, aliases: tuple) -> str | None:
 def _coerce_amount(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.replace(",", "", regex=False).str.strip()
     return pd.to_numeric(s, errors="coerce")
+
+
+def _coerce_single_amount(val: Any) -> float | None:
+    return _to_float(val)
+
+
+def _coerce_single_pct(val: Any) -> float | None:
+    if val is None:
+        return None
+    txt = str(val).strip().replace("%", "")
+    n = _to_float(txt)
+    return float(n) if n is not None else None
+
+
+def _pick_best_amount_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
+    year_cols: list[tuple[int, str]] = []
+    for col in df.columns:
+        norm = _normalize_header(col)
+        m = re.search(r"(19|20)\d{2}", norm)
+        if m:
+            year_cols.append((int(m.group(0)), col))
+    if len(year_cols) >= 2:
+        year_cols.sort(reverse=True)
+        return year_cols[0][1], year_cols[1][1]
+    if len(year_cols) == 1:
+        return year_cols[0][1], None
+    current_col = _find_column(df, AMOUNT_ALIASES)
+    previous_col = None
+    for col in df.columns:
+        norm = _normalize_header(col)
+        if "previous" in norm or "prior" in norm or "last year" in norm:
+            previous_col = col
+            break
+    return current_col, previous_col
+
+
+def _build_beginner_summary(
+    metrics: dict[str, Any],
+    ratios: dict[str, Any],
+    insights: dict[str, list[str]],
+    final_health: dict[str, Any],
+) -> str:
+    cr = ratios.get("current_ratio")
+    de = ratios.get("debt_to_equity")
+    pr = ratios.get("proprietary_ratio")
+    risk = final_health.get("risk_level", "Medium")
+    pieces = [
+        (
+            f"The business has a current ratio of {cr}, so it can cover short-term bills comfortably."
+            if cr is not None and cr >= 1.5
+            else f"The business has a current ratio of {cr}, so short-term cash flow should be watched closely."
+            if cr is not None
+            else "Current ratio is not available from the uploaded file."
+        ),
+        (
+            f"Debt-to-equity is {de}, which means debt is low compared to owner funds."
+            if de is not None and de <= 1
+            else f"Debt-to-equity is {de}, so debt pressure may be moderate to high."
+            if de is not None
+            else "Debt-to-equity could not be calculated due to missing equity."
+        ),
+        (
+            f"Proprietary ratio is {round(pr * 100, 1)}%, showing strong ownership support."
+            if pr is not None and pr >= 0.5
+            else f"Proprietary ratio is {round(pr * 100, 1)}%, so ownership support is moderate."
+            if pr is not None
+            else "Proprietary ratio is not available from the data."
+        ),
+    ]
+    top_strength = final_health.get("strengths", [])[:2]
+    if top_strength:
+        pieces.append("Key strengths: " + "; ".join(top_strength) + ".")
+    pieces.append(f"Overall risk level is {risk.lower()}.")
+    extra = insights.get("deep", [])
+    if extra:
+        pieces.append(extra[0])
+    return " ".join(pieces)
+
+
+def _analyze_balance_sheet_csv(file_bytes: bytes) -> dict[str, Any]:
+    try:
+        df = pd.read_csv(io.BytesIO(file_bytes))
+    except Exception as e:
+        raise ValueError(f"Could not read CSV: {e!s}") from e
+
+    if df.empty:
+        raise ValueError("CSV has no rows.")
+
+    metric_col = _find_column(df, METRIC_ALIASES)
+    if not metric_col:
+        raise ValueError("CSV must include a metric/field column.")
+
+    current_col, previous_col = _pick_best_amount_columns(df)
+    growth_col = _find_column(df, GROWTH_ALIASES)
+    if not current_col:
+        raise ValueError("CSV must include value data (e.g. Amount or year column).")
+
+    required_patterns = {
+        "total_assets": re.compile(r"total\s+assets?", re.I),
+        "total_equity": re.compile(r"(total\s+equity|net\s*worth)", re.I),
+        "total_liabilities": re.compile(r"total\s+liabilit", re.I),
+        "cash": re.compile(r"cash(\s*&\s*cash\s*equivalents?)?|cash\s+equivalents?", re.I),
+        "current_assets": re.compile(r"current\s+assets?", re.I),
+        "current_liabilities": re.compile(r"current\s+liabilit", re.I),
+    }
+
+    extracted: dict[str, dict[str, float | None]] = {
+        k: {"current": None, "previous": None, "growth_pct": None} for k in required_patterns
+    }
+
+    for _, row in df.iterrows():
+        metric_raw = str(row.get(metric_col, "")).strip()
+        if not metric_raw:
+            continue
+        for key, pattern in required_patterns.items():
+            if not pattern.search(metric_raw):
+                continue
+            curr_val = _coerce_single_amount(row.get(current_col)) if current_col else None
+            prev_val = _coerce_single_amount(row.get(previous_col)) if previous_col else None
+            growth_val = _coerce_single_pct(row.get(growth_col)) if growth_col else None
+            if growth_val is None and curr_val is not None and prev_val not in (None, 0):
+                growth_val = ((curr_val - prev_val) / prev_val) * 100
+            extracted[key] = {"current": curr_val, "previous": prev_val, "growth_pct": growth_val}
+
+    missing = [k for k, v in extracted.items() if v["current"] is None]
+    if missing:
+        raise ValueError(
+            "Missing required metrics: " + ", ".join(missing).replace("_", " ")
+        )
+
+    ta = float(extracted["total_assets"]["current"] or 0.0)
+    te = float(extracted["total_equity"]["current"] or 0.0)
+    tl = float(extracted["total_liabilities"]["current"] or 0.0)
+    cash = float(extracted["cash"]["current"] or 0.0)
+    ca = float(extracted["current_assets"]["current"] or 0.0)
+    cl = float(extracted["current_liabilities"]["current"] or 0.0)
+
+    equation_gap = ta - (tl + te)
+    equation_balanced = math.isclose(ta, tl + te, rel_tol=0.01, abs_tol=1.0)
+    current_ratio = (ca / cl) if cl > 0 else None
+    debt_to_equity = (tl / te) if te > 0 else None
+    proprietary_ratio = (te / ta) if ta > 0 else None
+
+    growth_insights = []
+    for key, label in (
+        ("total_assets", "Total assets"),
+        ("total_equity", "Total equity"),
+        ("total_liabilities", "Total liabilities"),
+        ("cash", "Cash"),
+    ):
+        gp = extracted[key]["growth_pct"]
+        if gp is None:
+            continue
+        direction = "increased" if gp >= 0 else "decreased"
+        growth_insights.append(
+            f"{label} {direction} by {abs(round(gp, 1))}% compared with last year."
+        )
+
+    liquidity_text = (
+        "The company has enough short-term resources to pay upcoming bills comfortably."
+        if current_ratio is not None and current_ratio >= 1.5
+        else "Short-term payments may become tight, so cash and receivables should be watched."
+        if current_ratio is not None
+        else "Current ratio cannot be calculated because current liabilities are missing or zero."
+    )
+    solvency_text = (
+        "The company uses very little debt, which keeps long-term financial pressure low."
+        if debt_to_equity is not None and debt_to_equity <= 0.5
+        else "Debt level is moderate compared to equity, so loan burden should be monitored."
+        if debt_to_equity is not None and debt_to_equity <= 1.5
+        else "Debt is high compared to equity, which can increase long-term risk."
+        if debt_to_equity is not None
+        else "Debt-to-equity cannot be calculated because equity is missing or zero."
+    )
+    ownership_text = (
+        "A large part of assets is funded by owners, which gives better stability."
+        if proprietary_ratio is not None and proprietary_ratio >= 0.6
+        else "Ownership funding is moderate, so the business still depends on liabilities."
+        if proprietary_ratio is not None and proprietary_ratio >= 0.4
+        else "Ownership funding is low, so stability depends more on outside debt."
+        if proprietary_ratio is not None
+        else "Proprietary ratio cannot be calculated from the uploaded data."
+    )
+
+    deep_insights = [
+        "Huge increase in cash means strong earnings or future planning."
+        if (extracted["cash"]["growth_pct"] or 0) >= 25
+        else "Cash movement is steady, showing controlled day-to-day money management.",
+        "Company is investing extra money to earn more income.",
+        "Customers are paying on time, which is a healthy sign for working capital.",
+        "Higher taxes usually mean higher profits.",
+    ]
+
+    strengths = []
+    concerns = []
+    if equation_balanced:
+        strengths.append("Balance sheet equation is consistent.")
+    else:
+        concerns.append("Assets do not exactly match liabilities plus equity.")
+    if current_ratio is not None and current_ratio >= 1.5:
+        strengths.append("Short-term liquidity is strong.")
+    elif current_ratio is not None:
+        concerns.append("Short-term liquidity needs attention.")
+    if debt_to_equity is not None and debt_to_equity <= 1:
+        strengths.append("Debt level is low relative to equity.")
+    elif debt_to_equity is not None:
+        concerns.append("Debt level is relatively high against equity.")
+    if proprietary_ratio is not None and proprietary_ratio >= 0.5:
+        strengths.append("Ownership support is strong.")
+
+    risk_score = 0
+    if not equation_balanced:
+        risk_score += 2
+    if current_ratio is None or current_ratio < 1.2:
+        risk_score += 2
+    elif current_ratio < 1.5:
+        risk_score += 1
+    if debt_to_equity is None or debt_to_equity > 1.5:
+        risk_score += 2
+    elif debt_to_equity > 1.0:
+        risk_score += 1
+    if proprietary_ratio is None or proprietary_ratio < 0.4:
+        risk_score += 2
+    elif proprietary_ratio < 0.5:
+        risk_score += 1
+
+    risk_level = "Low" if risk_score <= 2 else "Medium" if risk_score <= 4 else "High"
+    one_line = (
+        "This company is financially very strong with low debt and healthy liquidity."
+        if risk_level == "Low"
+        else "This company is financially stable but should watch a few risk areas."
+        if risk_level == "Medium"
+        else "This company has clear financial pressure and needs corrective action."
+    )
+
+    ratios = {
+        "current_ratio": _round_ratio(current_ratio),
+        "debt_to_equity": _round_ratio(debt_to_equity),
+        "proprietary_ratio": _round_ratio(proprietary_ratio),
+    }
+    insights = {
+        "financial_growth": growth_insights,
+        "liquidity": [f"Current ratio is {_round_ratio(current_ratio)}.", liquidity_text],
+        "solvency": [f"Debt-to-equity is {_round_ratio(debt_to_equity)}.", solvency_text],
+        "ownership_strength": [
+            f"Proprietary ratio is {round((proprietary_ratio or 0) * 100, 1)}%.",
+            ownership_text,
+        ],
+        "deep": deep_insights,
+    }
+    final_health = {
+        "title": "Overall Financial Health",
+        "summary": one_line,
+        "risk_level": risk_level,
+        "strengths": strengths,
+        "concerns": concerns,
+    }
+
+    metric_payload = {
+        "total_assets": extracted["total_assets"],
+        "total_equity": extracted["total_equity"],
+        "total_liabilities": extracted["total_liabilities"],
+        "cash_and_equivalents": extracted["cash"],
+        "current_assets": extracted["current_assets"],
+        "current_liabilities": extracted["current_liabilities"],
+    }
+
+    return {
+        "overview": metric_payload,
+        "equation": {
+            "assets": ta,
+            "liabilities_plus_equity": tl + te,
+            "gap": round(equation_gap, 2),
+            "is_balanced": equation_balanced,
+        },
+        "ratios": ratios,
+        "insights": insights,
+        "final_health": final_health,
+        "ai_explanation": _build_beginner_summary(metric_payload, ratios, {"deep": deep_insights}, final_health),
+    }
 
 
 def _bucket_category(raw: str) -> str | None:
@@ -402,6 +684,24 @@ def upload_csv():
         return [{"item": str(r["_item"]).strip(), "amount": float(r["_amt"])}
                 for _, r in work[work["_bucket"] == bucket].iterrows()]
     return jsonify(_csv_payload(rows_for("assets"), rows_for("liabilities"), rows_for("equity")))
+
+
+@app.route("/analyze", methods=["POST"])
+def analyze_balance_sheet():
+    if "file" not in request.files:
+        return jsonify({"error": "No file part named 'file' in the request."}), 400
+    f = request.files["file"]
+    if not f or f.filename == "":
+        return jsonify({"error": "No file selected."}), 400
+    if not f.filename.lower().endswith(".csv"):
+        return jsonify({"error": "Only CSV files are supported right now."}), 400
+    try:
+        result = _analyze_balance_sheet_csv(f.read())
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Analysis failed: {e!s}"}), 500
 
 
 @app.route("/upload/xlsx", methods=["POST"])

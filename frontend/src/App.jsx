@@ -1,11 +1,14 @@
 import { useCallback, useState } from "react";
+import { Navigate, Route, Routes } from "react-router-dom";
 import Navbar from "./components/Navbar.jsx";
 import FileUpload from "./components/FileUpload.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import { PRODUCT_LINE, TAGLINE } from "./constants.js";
+import AnalyzePage from "./components/AnalyzePage.jsx";
 
 
-const API_BASE = "https://finsight-backend-6sik.onrender.com";
+const API_BASE =
+  import.meta.env.VITE_API_BASE?.trim() || "http://127.0.0.1:5000";
 
 export default function App() {
   const [data, setData] = useState(null);
@@ -58,37 +61,44 @@ export default function App() {
     }
   };
 
+  const home = (
+    <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
+      <header className="text-center mb-10 sm:mb-14 animate-fade-in">
+        <h1 className="font-display text-3xl sm:text-5xl font-semibold text-white tracking-tight">
+          FINSIGHT
+        </h1>
+        <p className="mt-3 text-lg sm:text-xl text-slate-300 font-medium max-w-2xl mx-auto leading-snug">
+          {TAGLINE}
+        </p>
+        <p className="mt-4 text-slate-500 max-w-xl mx-auto text-sm sm:text-base">
+          Upload a CSV with Category, Item, and Amount. We validate the balance-sheet identity,
+          surface ratios, and score structural health using transparent rules.
+        </p>
+      </header>
+
+      <FileUpload
+        onFile={handleFile}
+        loading={loading}
+        error={error}
+        uploadName={uploadName}
+        hasResults={Boolean(data)}
+        onClear={reset}
+      />
+
+      <section className="mt-12 sm:mt-16">
+        <Dashboard data={data} loading={loading} error={error} />
+      </section>
+    </main>
+  );
+
   return (
     <div className="min-h-screen flex flex-col">
       <Navbar />
-
-      <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
-        <header className="text-center mb-10 sm:mb-14 animate-fade-in">
-          <h1 className="font-display text-3xl sm:text-5xl font-semibold text-white tracking-tight">
-            FINSIGHT
-          </h1>
-          <p className="mt-3 text-lg sm:text-xl text-slate-300 font-medium max-w-2xl mx-auto leading-snug">
-            {TAGLINE}
-          </p>
-          <p className="mt-4 text-slate-500 max-w-xl mx-auto text-sm sm:text-base">
-            Upload a CSV with Category, Item, and Amount. We validate the balance-sheet identity,
-            surface ratios, and score structural health using transparent rules.
-          </p>
-        </header>
-
-        <FileUpload
-          onFile={handleFile}
-          loading={loading}
-          error={error}
-          uploadName={uploadName}
-          hasResults={Boolean(data)}
-          onClear={reset}
-        />
-
-        <section className="mt-12 sm:mt-16">
-          <Dashboard data={data} loading={loading} error={error} />
-        </section>
-      </main>
+      <Routes>
+        <Route path="/" element={home} />
+        <Route path="/analyze" element={<AnalyzePage />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
 
       <footer className="border-t border-white/5 py-6 text-center text-xs text-slate-500 px-4">
         {PRODUCT_LINE}
