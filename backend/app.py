@@ -403,14 +403,9 @@ def _build_beginner_summary(
     return " ".join(pieces)
 
 
-def _analyze_balance_sheet_csv(file_bytes: bytes) -> dict[str, Any]:
-    try:
-        df = pd.read_csv(io.BytesIO(file_bytes))
-    except Exception as e:
-        raise ValueError(f"Could not read CSV: {e!s}") from e
-
+def _analyze_balance_sheet_df(df: pd.DataFrame) -> dict[str, Any]:
     if df.empty:
-        raise ValueError("CSV has no rows.")
+        raise ValueError("File has no rows.")
 
     metric_col = _find_column(df, METRIC_ALIASES)
     if not metric_col:
@@ -606,6 +601,14 @@ def _analyze_balance_sheet_csv(file_bytes: bytes) -> dict[str, Any]:
     }
 
 
+def _analyze_balance_sheet_csv(file_bytes: bytes) -> dict[str, Any]:
+    try:
+        df = pd.read_csv(io.BytesIO(file_bytes))
+    except Exception as e:
+        raise ValueError(f"Could not read CSV: {e!s}") from e
+    return _analyze_balance_sheet_df(df)
+
+
 def _bucket_category(raw: str) -> str | None:
     if raw is None or (isinstance(raw, float) and pd.isna(raw)):
         return None
@@ -693,15 +696,19 @@ def analyze_balance_sheet():
     f = request.files["file"]
     if not f or f.filename == "":
         return jsonify({"error": "No file selected."}), 400
-    if not f.filename.lower().endswith(".csv"):
-        return jsonify({"error": "Only CSV files are supported right now."}), 400
+    filename = f.filename.lower()
     try:
-        result = _analyze_balance_sheet_csv(f.read())
+        if filename.endswith(".csv"):
+            df = pd.read_csv(f)
+        elif filename.endswith(".xlsx"):
+            df = pd.read_excel(f, engine="openpyxl")
+        else:
+            return jsonify({"error": "Only CSV and XLSX files are supported."}), 400
+
+        result = _analyze_balance_sheet_df(df)
         return jsonify(result)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
     except Exception as e:
-        return jsonify({"error": f"Analysis failed: {e!s}"}), 500
+        return jsonify({"error": f"File processing failed: {str(e)}"}), 400
 
 
 @app.route("/upload/xlsx", methods=["POST"])
